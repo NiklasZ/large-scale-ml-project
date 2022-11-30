@@ -6,7 +6,7 @@ from torchvision.models import resnet18
 # Otherwise we have to re-run all experiments using them.
 # Model source: https://pytorch.org/vision/master/models.html
 
-class ResNetMNIST(nn.Module):
+class ResNet18MNIST(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = resnet18(num_classes=10)  # Use ResNet18
@@ -16,7 +16,18 @@ class ResNetMNIST(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
+class ResNet18CIFAR10(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = resnet18(num_classes=10)  # Use ResNet18
+
+    def forward(self, x):
+        return self.model(x)
+
+
 # Dict of known models
 MODELS = {
-    ResNetMNIST.__name__: ResNetMNIST
+    ResNet18MNIST.__name__: ResNet18MNIST,
+    ResNet18CIFAR10.__name__: ResNet18CIFAR10
 }

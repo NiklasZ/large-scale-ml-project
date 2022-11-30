@@ -26,7 +26,8 @@ def get_train_args():
     #                         help='name of the group of runs this one belongs to')
     parser_new.add_argument('--sgd-minibatch-size', type=int, required=False, default=128,
                             help='how many sampled environment steps to use per gradient descent training batch.')
-    parser_new.add_argument('--cpu-only', type=bool, action=argparse.BooleanOptionalAction, required=False, default=False,
+    parser_new.add_argument('--cpu-only', type=bool, action=argparse.BooleanOptionalAction, required=False,
+                            default=False,
                             help='toggle if you only want to use the CPU even though a GPU is available.')
     parser_new.add_argument('--model-name', type=str, required=True,
                             help='which model to use for training. Available models are: '
@@ -45,11 +46,18 @@ def get_train_args():
                             help='how often to run a particular training configuration')
     parser_new.add_argument('--warm-up-epochs', type=int, required=False, default=1,
                             help='how many warm-up epochs of regular mini-batch to use before custom sampling')
-    parser_new.add_argument('--dataset', type=str, required=False, default='MNIST',
+    parser_new.add_argument('--dataset', type=str, required=True,
                             help='which dataset to use for training Available datasets are are: '
                                  f"{', '.join(DATASETS.keys())}")
-
-    # TODO add option to select and configure optimiser.
+    parser_new.add_argument('--log-minibatch-every', type=int, required=False, default=100,
+                            help='after how many mini-batches to log the progress of the training')
+    parser_new.add_argument('--scale-grad', type=bool, action=argparse.BooleanOptionalAction, required=False,
+                            default=False,
+                            help='scales gradients by scalar of 1/(num samples * probability of sample). Used to account for biasing of gradient')
+    # TODO add option to select optimiser
+    parser_new.add_argument('--optimiser-config', type=str, required=False,
+                            help='what arguments to pass to the optimiser sampler (should be a JSON). '
+                                 "E.g: \"{c:0.001, 'momentum':0.9}\"")
 
     args = vars(parser.parse_args())
 

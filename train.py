@@ -1,4 +1,3 @@
-import time
 from typing import Optional
 import uuid
 import torch
@@ -11,20 +10,25 @@ from arg_parser import get_train_args
 from datasets import DATASETS
 from models import MODELS
 from samplers import SAMPLERS, UpdatableSampler, RandomSamplerBase
+from time import time
 
 
-def train(args_dict: dict):
+def train(args_dict: dict, patch_tb=True):
     device = torch.device("cuda:0" if torch.cuda.is_available() and not args_dict['cpu_only'] else "cpu")
     TrainingDataset, EvauationDataset, ctor_args = DATASETS[args_dict['dataset']]
     train_ds = TrainingDataset(*ctor_args[:-1], **ctor_args[-1])
     test_ds = EvauationDataset(*ctor_args[:-1], **ctor_args[-1])
     use_wandb = args_dict['wandb']
+    scale_gradients = args_dict['scale_grad']
     run_group_id = uuid.uuid1()
     args_dict['run_group_id'] = run_group_id
 
     if use_wandb:
         import wandb
-        wandb.tensorboard.patch(save=False)
+        base_run_id = wandb.util.generate_id()
+        # Should only run once
+        if patch_tb:
+            wandb.tensorboard.patch(save=False)
 
     results = []
     for r in range(args_dict['training_runs']):
@@ -32,7 +36,7 @@ def train(args_dict: dict):
         writer = None
         # If using wandb, set up the run so it is logged later.
         if use_wandb:
-            run_id = wandb.util.generate_id()
+            run_id = f'{base_run_id}_{r}'
             experiment_name = f"{args_dict['run_name']}_{args_dict['model_name']}_{args_dict['sampler_name']}_{run_id}"
             run = wandb.init(id=run_id,
                              project='cs-260D', entity='ece-239-as',
@@ -43,7 +47,7 @@ def train(args_dict: dict):
             print(f'\nTraining run {r}')
 
         # Start timer
-        start = time.time()
+        start = time()
         model = MODELS[args_dict['model_name']]().to(device)
         if args_dict['sampler_config']:
             sampler = SAMPLERS[args_dict['sampler_name']](train_ds, **args_dict['sampler_config'], device=device)
@@ -54,7 +58,9 @@ def train(args_dict: dict):
         warmup_dl = DataLoader(dataset=train_ds, batch_size=args_dict['sgd_minibatch_size'],
                                sampler=RandomSamplerBase(train_ds))
         test_dl = DataLoader(test_ds, batch_size=args_dict['sgd_minibatch_size'])
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+        optimizer = torch.optim.SGD(model.parameters(),
+                                    lr=args_dict['optimiser_config']['lr'],
+                                    momentum=args_dict['optimiser_config']['momentum'])
         final_accuracy = train_once(model=model,
                                     device=device,
                                     train_dl=train_dl,
@@ -64,9 +70,11 @@ def train(args_dict: dict):
                                     optimizer=optimizer,
                                     stop_after=args_dict['stop_after'],
                                     sampler=sampler, use_wandb=use_wandb,
-                                    writer=writer)
+                                    writer=writer,
+                                    log_minibatch_every=args_dict['log_minibatch_every'],
+                                    scale_gradients=scale_gradients)
 
-        results.append({'time': time.time() - start,
+        results.append({'time': time() - start,
                         'test_accuracy': final_accuracy})
 
         if use_wandb:
@@ -85,8 +93,9 @@ def train_once(model: torch.nn.Module,
                warm_up_epochs: int,
                sampler: UpdatableSampler,
                use_wandb: bool,
-               writer: Optional[SummaryWriter]) -> float:
-
+               writer: Optional[SummaryWriter],
+               log_minibatch_every: int,
+               scale_gradients: bool) -> float:
     criterion = torch.nn.CrossEntropyLoss(reduction='none')  # return loss per datapoint rather than the mean.
 
     epoch = 0
@@ -96,6 +105,8 @@ def train_once(model: torch.nn.Module,
     last_test_accuracy = 0
     no_eval_improvements = 0
     avg_loss = 0
+    training_time = 0
+    evaluation_time = 0
 
     # Get accuracy once before training
     model.eval()  # set model to eval mode
@@ -112,6 +123,9 @@ def train_once(model: torch.nn.Module,
         # Iterate through batches of an epoch.
         print(f'==Epoch {epoch}==')
         for i, data in enumerate(sampling_dl, 0):
+
+            train_start = time()
+
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels, indices = data
 
@@ -121,8 +135,15 @@ def train_once(model: torch.nn.Module,
             # forward + backward + optimize
             outputs = model(inputs.to(device))
             data_point_loss = criterion(outputs, labels.to(device))
-            loss = data_point_loss.mean()
+
+            # Scale gradients to make the estimator unbiased.
+            if scale_gradients and sampling_dl == train_dl:
+                loss = ((data_point_loss * 1 / sampler.probabilities[indices]) / len(sampler.probabilities)).mean()
+            else:
+                loss = data_point_loss.mean()
+            # Calculate gradients
             loss.backward()
+            # Update weights
             optimizer.step()
 
             batch_counter += 1
@@ -131,23 +152,30 @@ def train_once(model: torch.nn.Module,
             running_loss += loss.item()
             avg_loss += 1 / batch_counter * (loss.item() - avg_loss)  # update average as we go
             data_point_counter += len(labels)
-            sampler.update_scores(data_point_loss, indices)
+
+            # Assume training ends here
+            training_time += time() - train_start
+
+            with torch.no_grad():
+                sampler.update_scores(data_point_loss, indices)
 
             if use_wandb:
                 writer.add_scalar(f"training_loss", avg_loss, data_point_counter)
 
             # Print loss
-            if i > 0 and i % 100 == 0:  # print every 100 mini-batches
+            if batch_counter > 0 and batch_counter % log_minibatch_every == 0:
                 print(f'[{epoch}, {i:5d}] loss: {running_loss / 100:.3f}')
                 running_loss = 0.0
 
             # Do evaluation run roughly once per epoch's data.
             if data_point_counter - last_evaluation >= len(sampling_dl.dataset):
+                evaluation_start = time()
                 last_evaluation = data_point_counter
                 model.eval()  # set model to eval mode
                 test_accuracy = evaluate(test_dl, device, model)
                 print(f'[{epoch}, {i:5d}] test accuracy: {test_accuracy:.3f}')
                 model.train()  # set back to train mode
+                evaluation_time += time() - evaluation_start
 
                 if use_wandb:
                     writer.add_scalar(f"test_accuracy", test_accuracy, data_point_counter)
@@ -161,6 +189,9 @@ def train_once(model: torch.nn.Module,
                     # If evaluation does not improve
                     if no_eval_improvements >= stop_after:
                         print('Finished training run')
+                        writer.add_scalar(f"training_time", training_time)
+                        writer.add_scalar(f"sampling_time", sampler.sampling_time)
+                        writer.add_scalar(f"evaluation_time", evaluation_time)
                         return test_accuracy
 
                 last_test_accuracy = test_accuracy
