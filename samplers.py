@@ -24,6 +24,8 @@ class RandomSamplerBase(RandomSampler, UpdatableSampler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sampling_time = 0
+        self.probabilities = torch.ones(len(args[0]), dtype=torch.float32) / len(args[0])
+        self.scores = torch.zeros(len(args[0]), dtype=torch.float32)
 
 
 # Based off of torch's WeightedRandomSampler

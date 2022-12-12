@@ -7,6 +7,8 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from wandb.sdk.wandb_run import Run
+
 from arg_parser import get_train_args
 from datasets import DATASETS
 from models import MODELS
@@ -46,6 +48,7 @@ def train(args_dict: dict, patch_tb=True):
             writer = SummaryWriter(f"/tmp/{experiment_name}")
             print(f'\nTraining run {r}, wandb: {run_id}')
         else:
+            run = None
             print(f'\nTraining run {r}')
 
         # Start timer
@@ -77,8 +80,8 @@ def train(args_dict: dict, patch_tb=True):
                                     stop_after=args_dict['stop_after'],
                                     sampler=sampler, use_wandb=use_wandb,
                                     writer=writer,
-                                    log_minibatch_every=args_dict['log_minibatch_every'],
-                                    scale_gradients=scale_gradients)
+                                    scale_gradients=scale_gradients,
+                                    run=run)
 
         results.append({'time': time() - start,
                         'test_accuracy': final_accuracy})
@@ -86,6 +89,10 @@ def train(args_dict: dict, patch_tb=True):
         if use_wandb:
             run.finish()
             writer.close()
+
+        # Don't bother redoing runs with terrible results
+        if final_accuracy < 0.5:
+            break
     print(results)
 
 
@@ -101,8 +108,8 @@ def train_once(model: torch.nn.Module,
                sampler: UpdatableSampler,
                use_wandb: bool,
                writer: Optional[SummaryWriter],
-               log_minibatch_every: int,
-               scale_gradients: bool) -> float:
+               scale_gradients: bool,
+               run: Run) -> float:
     criterion = torch.nn.CrossEntropyLoss(reduction='none')  # return loss per datapoint rather than the mean.
 
     epoch = 0
@@ -188,9 +195,14 @@ def train_once(model: torch.nn.Module,
 
                 if use_wandb:
                     writer.add_scalar(f"test_accuracy", test_accuracy, data_point_counter)
-                    writer.add_scalar(f"training_time", training_time)
-                    writer.add_scalar(f"sampling_time", sampler.sampling_time)
-                    writer.add_scalar(f"evaluation_time", evaluation_time)
+                    writer.add_scalar(f"training_time", training_time, data_point_counter)
+                    writer.add_scalar(f"sampling_time", sampler.sampling_time, data_point_counter)
+                    writer.add_scalar(f"evaluation_time", evaluation_time, data_point_counter)
+                    v, m = torch.var_mean(sampler.scores)
+                    run.log({"probabilities": sampler.probabilities,
+                             "scores": sampler.scores,
+                             "scores_mean": m,
+                             "scores_var": v})
 
                 # We round as more minor improvements are not worth tracking.
                 if round(test_accuracy, 3) <= round(best_test_accuracy, 3):
