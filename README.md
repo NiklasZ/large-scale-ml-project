@@ -1,4 +1,12 @@
-# CS260D-final-project
+# Importance Sampling based on Loss
+This repository contains a university project where we implement a data selection method known as "Importance sampling based on loss".
+Effectively, we reweight the data sampling distribution for training batches on gradient descent
+in favour of datapoints that yield the highest training loss. We experimented on the CIFAR10 dataset and found that the
+while the convergence speed improves slightly, it does not enhance test accuracy and ultimately there are more valuable
+methods to obtaining better convergence and accuracy. For contrast, we also show the effect data augmentation has on the
+accuracy (see below plot and [report](docs/report.pdf) for more details).
+
+![test_data_accuracy](docs/test_data_accuracy.png)
 
 ## Installation
 To run the code, you will need to install all packages in the `requirements.txt`, which can be done by:
